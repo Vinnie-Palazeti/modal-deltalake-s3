@@ -1,0 +1,110 @@
+# 1. Create IAM role for Lambda
+aws iam create-role \
+  --role-name s3-modal-lambda-role \
+  --assume-role-policy-document '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Service": "lambda.amazonaws.com"
+        },
+        "Action": "sts:AssumeRole"
+      }
+    ]
+  }' \
+  --profile YOUR_PROFILE
+
+# 2. Attach basic Lambda execution policy
+aws iam attach-role-policy \
+  --role-name s3-modal-lambda-role \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole \
+  --profile YOUR_PROFILE
+
+# 3. Create and zip the Lambda function
+# Save the Python code above to lambda_function.py, then:
+zip lambda-deployment.zip lambda_function.py
+
+# 4. Create the Lambda function
+aws lambda create-function \
+  --function-name s3-modal-trigger \
+  --runtime python3.11 \
+  --role arn:aws:iam::922335201895:role/s3-modal-lambda-role \
+  --handler lambda_function.lambda_handler \
+  --zip-file fileb://lambda-deployment.zip \
+  --timeout 30 \
+  --profile YOUR_PROFILE
+
+# 5. Add S3 trigger permission to Lambda
+aws lambda add-permission \
+  --function-name s3-modal-trigger \
+  --principal s3.amazonaws.com \
+  --action lambda:InvokeFunction \
+  --statement-id s3-trigger-permission \
+  --source-arn arn:aws:s3:::YOUR_BUCKET_NAME \
+  --profile YOUR_PROFILE
+
+# 6. Add secrets to lambda env
+aws lambda update-function-configuration \
+  --function-name s3-modal-trigger \
+  --environment '{
+    "Variables": {
+      "MODAL_URL":    "YOUR_MODAL_DEPLOYMENT_URL",
+      "MODAL_KEY":    "YOUR_MODAL_KEY",
+      "MODAL_SECRET": "YOUR_MODAL_SECRET"
+    }
+  }' \
+  --profile YOUR_PROFILE
+
+# 7. Configure S3 bucket notification
+# First create a notification configuration file (notification.json):
+cat > notification.json << 'EOF'
+{
+  "LambdaConfigurations": [
+    {
+      "Id": "modal-csv-trigger",
+      "LambdaFunctionArn": "arn:aws:lambda:us-east-1:922335201895:function:s3-modal-trigger",
+      "Events": ["s3:ObjectCreated:*"],
+      "Filter": {
+        "Key": {
+          "FilterRules": [
+            {
+              "Name": "prefix",
+              "Value": "raw/"
+            },
+            {
+              "Name": "suffix",
+              "Value": ".csv"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
+EOF
+
+# 8. Apply the notification configuration to your S3 bucket
+aws s3api put-bucket-notification-configuration \
+  --bucket YOUR_BUCKET_NAME \
+  --notification-configuration file://notification.json \
+  --profile YOUR_PROFILE 
+
+
+# Extra: Check lambda functions
+aws lambda list-functions \
+  --region us-east-1 \
+  --output table \
+  --profile YOUR_PROFILE
+
+# login to account via sso
+aws sso login --profile YOUR_PROFILE
+
+# get account info
+aws sts get-caller-identity --profile YOUR_PROFILE
+
+# get only account number
+aws sts get-caller-identity --query Account --output text --profile YOUR_PROFILE
+
+# send data up to test
+aws s3 cp 2024-07-03.csv s3://YOUR_BUCKET_NAME/raw/2024-07-03.csv --profile YOUR_PROFILE
